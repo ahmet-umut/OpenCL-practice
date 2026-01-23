@@ -6,7 +6,7 @@ from math import *
 ctx = opencl.create_some_context(answers=[""])
 queue = opencl.CommandQueue(ctx)
 
-string = "Biz dil modeli mi yazmak istiyoz?"
+string = "Biz "
 volary = list(set(string))
 mbedin = {char: volary.index(char) for char in string}
 
@@ -31,7 +31,7 @@ output = rm_ar_zerocopy((1,), 0, clypes.int)
 class Agumen:
     def __init__(self, cl_buf, globa=False):
         self.array = cl_buf
-        self.pecer = "global"
+        self.pecer = "global" if globa else "constant"
         self.type = "half" if cl_buf.dtype == clypes.half else "int"
         for name, value in globals().items():
             if value is self.array:
