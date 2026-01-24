@@ -3,17 +3,17 @@ import pyopencl.cltypes as clypes
 import numpy
 from math import *
 
-ctx = opencl.create_some_context(answers=[""])
-queue = opencl.CommandQueue(ctx)
+coext = opencl.create_some_context(answers=[""])
+queue = opencl.CommandQueue(coext)
 
 string = "Biz "
-volary = list(set(string))
+volary = list(set(string)) 
 mbedin = {char: volary.index(char) for char in string}
 
-#coarse SVM zero-copy buffer
-def rm_ar_zerocopy(shape, random=False, dtype=clypes.half):
+#zero-copy 
+def ropya(shape, random=False, dtype=clypes.half):
     np_dtype = numpy.float16 if dtype == clypes.half else numpy.int32
-    host_array = opencl.csvm_empty(ctx, shape, np_dtype, queue=queue)
+    host_array = opencl.csvm_empty(coext, shape, np_dtype, queue=queue)
     if random:
         host_array[:] = numpy.random.rand(*shape).astype(np_dtype)
     cl_buf = opencl.SVM(host_array)
@@ -22,11 +22,13 @@ def rm_ar_zerocopy(shape, random=False, dtype=clypes.half):
     cl_buf.host_array = host_array
     return cl_buf
 
-n=9
+oplt=2
 rank=2
 opspe=len(volary)
-weights = rm_ar_zerocopy((rank,opspe,2), 1)
-output = rm_ar_zerocopy((1,), 0, clypes.int)
+weights = ropya((rank,opspe,2), 1)
+output = ropya((oplt+1,), 0, clypes.int)
+
+output.host_array[0] = 0
 
 class Agumen:
     def __init__(self, cl_buf, globa=False):
@@ -52,19 +54,22 @@ class Agumen:
         return getattr(self.array, name)
 
 
-iputs = Agumen(weights), Agumen(output, True)
+ips = Agumen(weights), Agumen(output, True)
 
 kernel = f"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
-kernel void program({', '.join(f"{iput.pecer} {iput.type}* {iput.name}" for iput in iputs)}, int input)
+kernel void program({', '.join(f"{ip.pecer} {ip.type}* {ip.name}" for ip in ips)})
 {{
     int locl0 = get_local_id(0);
     int locl1 = get_local_id(1);
     int locl = locl1*{rank} + locl0;
 
     local half preactivation[{rank}][{opspe}];
-    preactivation[locl0][locl1] = {weights.access("locl0,input,0")} * {weights.access("locl0,locl1,1")};
     local half activations[{(activationsz := 2**ceil(log2(opspe)))}];
+    local uchar indis[{opspe//2+1}];
+
+    {"".join(f"""
+    preactivation[locl0][locl1] = {weights.access(f"locl0,output[{ipnex}],0")} * {weights.access("locl0,locl1,1")};
 
     // activation
     if (locl0)
@@ -79,7 +84,6 @@ kernel void program({', '.join(f"{iput.pecer} {iput.type}* {iput.name}" for iput
         activations[{opspe}+locl1] = -2;
 
     // argmax
-    local uchar indis[{opspe//2+1}];
     if (locl1%2 == 0 && locl0)
     {{
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -98,24 +102,27 @@ kernel void program({', '.join(f"{iput.pecer} {iput.type}* {iput.name}" for iput
             else
                 indis[locl1/{2**(n+1)}] = indis[locl1/{2**n}];
             """ for n in range(1, depth+1))}
-            output[0] = indis[0];
+            output[{ipnex+1}] = indis[0];
         {"}"*depth}
     }}
+    barrier(CLK_LOCAL_MEM_FENCE);
+    """ for ipnex in range(oplt))}
 }}
 """
 
 print(kernel)
 
 # Build and run
-import struct
-prg = opencl.Program(ctx, kernel).build()
+# import struct
+prg = opencl.Program(coext, kernel).build()
 
 #run kernel with zero-copy buffers
-prg.program(queue, (rank,opspe), None, weights, output, struct.pack('i', mbedin[string[0]]))
+prg.program(queue, (rank,opspe), None, weights, output)
 queue.finish()
 
 print(f"Input {string}")
 print(f"Weights \n{weights.host_array}")
-print(f"Result {output.host_array[0]}")
+print(f"Result {output.host_array}")
+print(f"decoded result: {''.join(volary[output.host_array[i]] for i in range(oplt+1))}")
 
 #print("".join(volary[token] for token in rsult))
