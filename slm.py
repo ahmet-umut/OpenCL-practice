@@ -7,14 +7,14 @@ coext = opencl.create_some_context(answers=[""])
 queue = opencl.CommandQueue(coext)
 
 string = "Biz "
-volary = list(set(string)) 
+volary = "".join(list(set(string)))
 mbedin = {char: volary.index(char) for char in string}
 
-#zero-copy 
-def ropya(shape, random=False, dtype=clypes.half):
+#zero-copy array
+def rcopa(shape, adiid=False, dtype=clypes.half):
     np_dtype = numpy.float16 if dtype == clypes.half else numpy.int32
     host_array = opencl.csvm_empty(coext, shape, np_dtype, queue=queue)
-    if random:
+    if adiid:
         host_array[:] = numpy.random.rand(*shape).astype(np_dtype)
     cl_buf = opencl.SVM(host_array)
     cl_buf.shape = shape
@@ -25,20 +25,22 @@ def ropya(shape, random=False, dtype=clypes.half):
 oplt=2
 rank=2
 opspe=len(volary)
-weights = ropya((rank,opspe,2), 1)
-output = ropya((oplt+1,), 0, clypes.int)
 
-output.host_array[0] = 0
+weights = rcopa((rank,opspe,2), 1)
+output = rcopa((oplt+1,), 0, clypes.int)
+error = rcopa((opspe,))
+
+output.host_array[0] = mbedin[string[0]]
 
 class Agumen:
-    def __init__(self, cl_buf, globa=False):
+    def __init__(self, cl_buf):
         self.array = cl_buf
-        self.pecer = "global" if globa else "constant"
         self.type = "half" if cl_buf.dtype == clypes.half else "int"
         for name, value in globals().items():
             if value is self.array:
                 self.name = name
                 break
+
         def access(self, indice_text):
             indices = indice_text.split(',')
             brackets_text = indices[-1]
@@ -50,16 +52,20 @@ class Agumen:
             return f"{self.name}[{brackets_text}]"
         self.access = access
         self.array.access = access.__get__(self)
+
+        def text(self, globa=0):
+            return f"{"global" if globa else "constant"} {self.type}* {self.name}"
+        self.text = text
+        self.array.text = text.__get__(self)
+
     def __getattr__(self, name):
         return getattr(self.array, name)
 
+Agumen(weights)
+Agumen(output)
+Agumen(error)
 
-ips = Agumen(weights), Agumen(output, True)
-
-kernel = f"""
-#pragma OPENCL EXTENSION cl_khr_fp16 : enable
-kernel void program({', '.join(f"{ip.pecer} {ip.type}* {ip.name}" for ip in ips)})
-{{
+irie = f"""
     int locl0 = get_local_id(0);
     int locl1 = get_local_id(1);
     int locl = locl1*{rank} + locl0;
@@ -67,9 +73,9 @@ kernel void program({', '.join(f"{ip.pecer} {ip.type}* {ip.name}" for ip in ips)
     local half preactivation[{rank}][{opspe}];
     local half activations[{(activationsz := 2**ceil(log2(opspe)))}];
     local uchar indis[{opspe//2+1}];
-
-    {"".join(f"""
-    preactivation[locl0][locl1] = {weights.access(f"locl0,output[{ipnex}],0")} * {weights.access("locl0,locl1,1")};
+    """
+irlop = lambda ipnex=None: f"""
+    preactivation[locl0][locl1] = {weights.access(f"locl0, {"input" if ipnex is None else f"output[{ipnex}]"} ,0")} * {weights.access("locl0,locl1,1")};
 
     // activation
     if (locl0)
@@ -79,11 +85,12 @@ kernel void program({', '.join(f"{ip.pecer} {ip.type}* {ip.name}" for ip in ips)
         for (int i = 0; i < {rank}; i++)
             sum += preactivation[i][locl1];
         activations[locl1] = sum / (1+fabs(sum));
-    }}
-    else if (locl1 < {activationsz - opspe})
-        activations[{opspe}+locl1] = -2;
 
     // argmax
+    {"" if ipnex is None else f"""
+    }} else if (locl1 < {activationsz - opspe})
+        activations[{opspe}+locl1] = -2;
+
     if (locl1%2 == 0 && locl0)
     {{
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -105,8 +112,28 @@ kernel void program({', '.join(f"{ip.pecer} {ip.type}* {ip.name}" for ip in ips)
             output[{ipnex+1}] = indis[0];
         {"}"*depth}
     }}
-    barrier(CLK_LOCAL_MEM_FENCE);
-    """ for ipnex in range(oplt))}
+    """}
+    """
+
+kernel = f"""
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
+{{
+    {irie}
+    {"barrier(CLK_LOCAL_MEM_FENCE);".join(irlop(ipnex) for ipnex in range(oplt))}
+}}
+kernel void error ({", ".join([ weights.text(), error.text(1), "int input, int coect" ])})
+{{
+    {irie}
+    {irlop()}
+        error[locl1] = activations[locl1];
+        /*
+        if (coect == locl1)
+            error[locl1] = coect - activations[locl1];
+        else
+            error[locl1] = activations[locl1];
+        */
+    }}
 }}
 """
 
@@ -117,12 +144,12 @@ print(kernel)
 prg = opencl.Program(coext, kernel).build()
 
 #run kernel with zero-copy buffers
-prg.program(queue, (rank,opspe), None, weights, output)
+prg.infer(queue, (rank,opspe), None, weights, output)
+prg.error(queue, (rank,opspe), None, weights, error, numpy.int32(mbedin[string[0]]), numpy.int32(mbedin[string[1]]))
 queue.finish()
 
-print(f"Input {string}")
 print(f"Weights \n{weights.host_array}")
-print(f"Result {output.host_array}")
-print(f"decoded result: {''.join(volary[output.host_array[i]] for i in range(oplt+1))}")
-
-#print("".join(volary[token] for token in rsult))
+print(f"volary: *{volary}*")
+print(f"inference sequence {output.host_array}")
+print(f"decoded: {''.join(volary[output.host_array[i]] for i in range(oplt+1))}")
+print(f"Error {error.host_array}")
