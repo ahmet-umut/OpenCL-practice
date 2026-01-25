@@ -22,7 +22,7 @@ def rcopa(shape, adiid=False, dtype=clypes.half):
     cl_buf.host_array = host_array
     return cl_buf
 
-oplt=2
+oplt=3
 rank=2
 opspe=len(volary)
 
@@ -71,8 +71,10 @@ irie = f"""
     int locl = locl1*{rank} + locl0;
 
     local half preactivation[{rank}][{opspe}];
-    local half activations[{(activationsz := 2**ceil(log2(opspe)))}];
     local uchar indis[{opspe//2+1}];
+    local half noled[{(cel_o := 2**ceil(log2(opspe)))}];
+    local half activations[{cel_o}];
+    local half sumer[{opspe//2+1}];
     """
 irlop = lambda ipnex=None: f"""
     preactivation[locl0][locl1] = {weights.access(f"locl0, {"input" if ipnex is None else f"output[{ipnex}]"} ,0")} * {weights.access("locl0,locl1,1")};
@@ -84,11 +86,34 @@ irlop = lambda ipnex=None: f"""
         half sum = 0.0f;
         for (int i = 0; i < {rank}; i++)
             sum += preactivation[i][locl1];
-        activations[locl1] = sum / (1+fabs(sum));
+        noled[locl1] = atan(sum) + M_PI_2_H;
+        //activations[locl1] = sum / (1+fabs(sum));
+    }}
+    else if (locl1 < {cel_o - opspe})
+        noled[{opspe}+locl1] = 0;
+
+    if (locl1%2 == 0 && locl0)
+    {{
+        barrier(CLK_LOCAL_MEM_FENCE);
+        sumer[locl1/2] = noled[locl1] + noled[locl1+1];
+        //{( depth := ceil(log2(opspe))-1 )}
+        {"".join(f"""
+        if (locl1%{2**(n+1)} == 0)
+        {{
+            barrier(CLK_LOCAL_MEM_FENCE);
+            sumer[locl1/{2**(n+1)}] = sumer[locl1/{2**n}] + sumer[locl1/{2**n}+1];
+            """ for n in range(1, depth+1)) }
+        { "}"*depth }
+    }}
+    if (locl0)
+    {{
+        barrier(CLK_LOCAL_MEM_FENCE);
+        noled[locl1] /= sumer[0];
+    }}
 
     // argmax
     {"" if ipnex is None else f"""
-    }} else if (locl1 < {activationsz - opspe})
+    else if (locl1 < {cel_o - opspe})
         activations[{opspe}+locl1] = -2;
 
     if (locl1%2 == 0 && locl0)
@@ -101,7 +126,7 @@ irlop = lambda ipnex=None: f"""
 
         //{( depth := ceil(log2(opspe))-1 )}
         {"".join(f"""
-        if (locl1%{2**(n+1)} == 0 && locl0)
+        if (locl1%{2**(n+1)} == 0)
         {{
             barrier(CLK_LOCAL_MEM_FENCE);
             if (activations[indis[locl1/{2**n}]] < activations[indis[locl1/{2**n}+1]])
@@ -126,11 +151,16 @@ kernel void error ({", ".join([ weights.text(), error.text(1), "int input, int c
 {{
     {irie}
     {irlop()}
+    if (locl0)
+    {{
+        error[locl1] = noled[locl1];
+        /*
         if (coect == locl1)
             error[locl1] = activations[locl1]+1;
         else
             error[locl1] = 1-activations[locl1];
-        //error[locl1] = activations[locl1];
+        error[locl1] = fabs(error[locl1]);
+        */
     }}
 }}
 """
