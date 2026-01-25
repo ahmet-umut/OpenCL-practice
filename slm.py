@@ -126,13 +126,11 @@ kernel void error ({", ".join([ weights.text(), error.text(1), "int input, int c
 {{
     {irie}
     {irlop()}
-        error[locl1] = activations[locl1];
-        /*
         if (coect == locl1)
-            error[locl1] = coect - activations[locl1];
+            error[locl1] = activations[locl1]+1;
         else
-            error[locl1] = activations[locl1];
-        */
+            error[locl1] = 1-activations[locl1];
+        //error[locl1] = activations[locl1];
     }}
 }}
 """
