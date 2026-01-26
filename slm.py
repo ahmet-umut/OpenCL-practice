@@ -138,24 +138,6 @@ irlop = lambda ipnex=None: f"""
     // legacy code to be removed:
 
     // output
-    /*
-    */
-    {"" if ipnex is None else f"""
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (!locl)
-    {{
-        half random = {numpy.random.rand():.6f}h;
-        for (int i = 0; i < {opspe}; i++)
-        {{
-            random -= linop[i];
-            if (random <= 0.h)
-            {{
-                output[{ipnex+1}] = i;
-                return;
-            }}
-        }}
-    }}
-    """}
     """
 
 kernel = f"""
@@ -165,7 +147,25 @@ kernel = f"""
 kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
 {{
     {irie}
-    {{{"} barrier(CLK_LOCAL_MEM_FENCE); {".join(irlop(ipnex) for ipnex in range(oplt))}}}
+    {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
+        irlop(ipnex) + 
+        f"""
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (!locl)
+        {{
+            half random = {numpy.random.rand():.6f}h;
+            for (int i = 0; i < {opspe}; i++)
+            {{
+                random -= linop[i];
+                if (random <= 0.h)
+                {{
+                    output[{ipnex+1}] = i;
+                    break;
+                }}
+            }}
+        }}
+        """
+    for ipnex in range(oplt))}}}
 }}
 kernel void error ({", ".join([ weights.text(), error.text(1), "int input, int coect" ])})
 {{
