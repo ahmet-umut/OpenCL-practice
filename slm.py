@@ -83,14 +83,14 @@ irie = f"""
     local half sumer[{opspe//2+1}];
 
     local half reddt[{opspe//2+1}];
-    local half t;
+    local half t,tmin,tmax;
 
     """
 redue = lambda souce, auval, fn: f"""
     if (locl1 < {cel_o - opspe})
         {souce}[{opspe}+locl1] = {auval};
     barrier(CLK_LOCAL_MEM_FENCE);
-    if (locl0 && locl%2 == 0)
+    if (locl0 && locl1%2 == 0)
     {{
         reddt[locl1/2] = {fn}({souce}[locl1], {souce}[locl1+1]);
 
@@ -114,17 +114,37 @@ irlop = lambda ipnex=None: f"""
         half sum = 0.0f;
         for (int i = 0; i < {rank}; i++)
             sum += preactivation[i][locl1];
-        linop[locl1] = sum * {alpha-1}h;
+        linop[locl1] = sum;
     }}
 
-    {redue("linop", "-HUGE_VAL", "max")}
+    // entmax
 
+    {redue("linop", "-HUGE_VAL", "max")}
     barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl)
-        t = reddt[0] + (pow({opspe}.h, {1-alpha}h) - 1) / 2;
+    {{
+        tmin = reddt[0] - 1;
+        tmax = reddt[0] - pow({opspe}.h, {1-alpha}h);
+    }}
 
-    #define sum(q,w) q+w
-    {redue("linop", "0.0h", "sum")}
+    {"""
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (!locl)
+        if (reddt[0] > 1)   tmin = t;
+        else                tmax = t;
+    """.join(f"""
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (!locl)
+        t = (tmin + tmax) / 2;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (locl0)
+        activations[locl1] = pow(max(0.h, linop[locl1] - t), {1/(alpha - 1)}h);
+    {redue("activations", "0.0h", "add")}
+    """ for _ in range(1))}
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (locl0)
+        linop[locl1] = pow(max(0.h, linop[locl1] - t), {1/(alpha - 1)}h) / reddt[0];
 
     // argmax
     /*
@@ -159,15 +179,17 @@ irlop = lambda ipnex=None: f"""
 
 kernel = f"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
+#define add(a,b) ((a)+(b))
 kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
 {{
     {irie}
-    {"barrier(CLK_LOCAL_MEM_FENCE);".join(irlop(ipnex) for ipnex in range(oplt))}
+    {{{"} barrier(CLK_LOCAL_MEM_FENCE); {".join(irlop(ipnex) for ipnex in range(oplt))}}}
 }}
 kernel void error ({", ".join([ weights.text(), error.text(1), "int input, int coect" ])})
 {{
     {irie}
     {irlop()}
+    barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
     {{
         error[locl1] = linop[locl1];
