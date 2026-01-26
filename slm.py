@@ -72,10 +72,10 @@ irie = f"""
     int locl = locl1*{rank} + locl0;
 
     local uchar indis[{opspe//2+1}]; // to be deleted, reddt is used for all reductions.
-    local half activations[{cel_o}]; // to be deleted, activations are not used for now. Layers are : input -> opspe x 2 -> 2 x opspe -> alpha-entmax
+    local half activations[{(cel_o := 2**ceil(log2(opspe)))}]; // to be deleted, activations are not used for now. Layers are : input -> opspe x 2 -> 2 x opspe -> alpha-entmax
 
     local half preactivation[{rank}][{opspe}];
-    local half linop[{(cel_o := 2**ceil(log2(opspe)))}];
+    local half linop[{cel_o}];
     local half reddt[{opspe//2+1}];
     local half tau,taumn,taumx; //tau in alpha-entmax 
     """
@@ -128,44 +128,34 @@ irlop = lambda ipnex=None: f"""
         tau = (taumn + taumx) / 2;
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
-        activations[locl1] = pow(max(0.h, linop[locl1] - t), {1/(alpha - 1)}h);
+        activations[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
     {redue("activations", "0.0h", "add")}
     
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
-        linop[locl1] = pow(max(0.h, linop[locl1] - t), {1/(alpha - 1)}h) / reddt[0];
+        linop[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h) / reddt[0];
     
     // legacy code to be removed:
 
-    // argmax
+    // output
     /*
+    */
     {"" if ipnex is None else f"""
-    else if (locl1 < {cel_o - opspe})
-        activations[{opspe}+locl1] = -2;
-
-    if (locl1%2 == 0 && locl0)
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (!locl)
     {{
-        barrier(CLK_LOCAL_MEM_FENCE);
-        if (activations[locl1] < activations[locl1+1])
-            indis[locl1/2] = locl1+1;
-        else
-            indis[locl1/2] = locl1;
-
-        //{( depth := ceil(log2(opspe))-1 )}
-        {"".join(f"""
-        if (locl1%{2**(n+1)} == 0)
+        half random = {numpy.random.rand():.6f}h;
+        for (int i = 0; i < {opspe}; i++)
         {{
-            barrier(CLK_LOCAL_MEM_FENCE);
-            if (activations[indis[locl1/{2**n}]] < activations[indis[locl1/{2**n}+1]])
-                indis[locl1/{2**(n+1)}] = indis[locl1/{2**n}+1];
-            else
-                indis[locl1/{2**(n+1)}] = indis[locl1/{2**n}];
-            """ for n in range(1, depth+1))}
-            output[{ipnex+1}] = indis[0];
-        {"}"*depth}
+            random -= linop[i];
+            if (random <= 0.h)
+            {{
+                output[{ipnex+1}] = i;
+                return;
+            }}
+        }}
     }}
     """}
-    */
     """
 
 kernel = f"""
@@ -195,7 +185,7 @@ print(kernel)
 # import struct
 prg = opencl.Program(coext, kernel).build()
 
-#run kernel with zero-copy buffers
+#run kernels with zero-copy buffers
 prg.infer(queue, (rank,opspe), None, weights, output)
 prg.error(queue, (rank,opspe), None, weights, error, numpy.int32(mbedin[string[0]]), numpy.int32(mbedin[string[1]]))
 queue.finish()
