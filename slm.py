@@ -1,3 +1,4 @@
+from numpy.random import f
 import pyopencl as opencl
 import pyopencl.cltypes as clypes
 import numpy
@@ -40,19 +41,6 @@ class Agumen:
             if value is self.array:
                 self.name = name
                 break
-
-        def access(self, indice_text):
-            indices = indice_text.split(',')
-            brackets_text = indices[-1]
-            ine_o = len(indices)
-            for i in range(ine_o-1):
-                brackets_text += f"+{indices[ine_o-i-2]}"
-                for j in range(i+1):
-                    brackets_text += f"*{self.array.shape[j]}"
-            return f"{self.name}[{brackets_text}]"
-        self.access = access
-        self.array.access = access.__get__(self)
-
         def text(self, globa=0):
             return f"{"global" if globa else "constant"} {self.type}* {self.name}"
         self.text = text
@@ -99,7 +87,7 @@ redue = lambda souce, auval, fn: f"""
     }}
     """
 irlop = lambda ipnex=None: f"""
-    preactivation[locl0][locl1] = {weights.access(f"locl0, {"input" if ipnex is None else f"output[{ipnex}]"} ,0")} * {weights.access("locl0,locl1,1")};
+    preactivation[locl0][locl1] = weights[locl0][{"input" if ipnex is None else f"output[{ipnex}]"}][0] * weights[locl0][locl1][1];
 
     // linear output:
 
@@ -144,8 +132,10 @@ kernel = f"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #define add(a,b) ((a)+(b))
 
-kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
+// kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
+kernel void infer (constant half* _weights, global int* output)
 {{
+    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
         irlop(ipnex) + 
@@ -167,8 +157,9 @@ kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
         """
     for ipnex in range(oplt))}}}
 }}
-kernel void error ({", ".join([ weights.text(), error.text(1), "int input, int coect" ])})
+kernel void error (constant half* _weights, {error.text(1)}, int input, int coect)
 {{
+    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     {irlop()}
     barrier(CLK_LOCAL_MEM_FENCE);
