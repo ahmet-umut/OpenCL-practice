@@ -71,21 +71,15 @@ irie = f"""
     int locl1 = get_local_id(1);
     int locl = locl1*{rank} + locl0;
 
-    local uchar indis[{opspe//2+1}];
-    local half noled[{(cel_o := 2**ceil(log2(opspe)))}];
-    local half activations[{cel_o}];
+    local uchar indis[{opspe//2+1}]; // to be deleted, reddt is used for all reductions.
+    local half activations[{cel_o}]; // to be deleted, activations are not used for now. Layers are : input -> opspe x 2 -> 2 x opspe -> alpha-entmax
 
     local half preactivation[{rank}][{opspe}];
-    local half linop[{cel_o}];
-    //local half preactivation[{opspe}];
-
-    local half maxer[{opspe//2+1}];
-    local half sumer[{opspe//2+1}];
-
+    local half linop[{(cel_o := 2**ceil(log2(opspe)))}];
     local half reddt[{opspe//2+1}];
-    local half t,tmin,tmax;
-
+    local half tau,taumn,taumx; //tau in alpha-entmax 
     """
+# Reduction macro. Reduces to reddt[0] in log(opspe steps.)
 redue = lambda souce, auval, fn: f"""
     if (locl1 < {cel_o - opspe})
         {souce}[{opspe}+locl1] = {auval};
@@ -107,7 +101,8 @@ redue = lambda souce, auval, fn: f"""
 irlop = lambda ipnex=None: f"""
     preactivation[locl0][locl1] = {weights.access(f"locl0, {"input" if ipnex is None else f"output[{ipnex}]"} ,0")} * {weights.access("locl0,locl1,1")};
 
-    // linear output
+    // linear output:
+
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
     {{
@@ -117,34 +112,30 @@ irlop = lambda ipnex=None: f"""
         linop[locl1] = sum;
     }}
 
-    // entmax
+    // entmax:
 
+    // find tau (t)
     {redue("linop", "-HUGE_VAL", "max")}
     barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl)
     {{
-        tmin = reddt[0] - 1;
-        tmax = reddt[0] - pow({opspe}.h, {1-alpha}h);
+        taumn = reddt[0] - 1;
+        taumx = reddt[0] - pow({opspe}.h, {1-alpha}h);
     }}
 
-    {"""
     barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl)
-        if (reddt[0] > 1)   tmin = t;
-        else                tmax = t;
-    """.join(f"""
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (!locl)
-        t = (tmin + tmax) / 2;
+        tau = (taumn + taumx) / 2;
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
         activations[locl1] = pow(max(0.h, linop[locl1] - t), {1/(alpha - 1)}h);
     {redue("activations", "0.0h", "add")}
-    """ for _ in range(1))}
-
+    
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
         linop[locl1] = pow(max(0.h, linop[locl1] - t), {1/(alpha - 1)}h) / reddt[0];
+    
+    // legacy code to be removed:
 
     // argmax
     /*
@@ -180,6 +171,7 @@ irlop = lambda ipnex=None: f"""
 kernel = f"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #define add(a,b) ((a)+(b))
+
 kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
 {{
     {irie}
