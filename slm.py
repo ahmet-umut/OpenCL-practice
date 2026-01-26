@@ -65,53 +65,69 @@ Agumen(weights)
 Agumen(output)
 Agumen(error)
 
+alpha = 1.1
 irie = f"""
     int locl0 = get_local_id(0);
     int locl1 = get_local_id(1);
     int locl = locl1*{rank} + locl0;
 
-    local half preactivation[{rank}][{opspe}];
     local uchar indis[{opspe//2+1}];
     local half noled[{(cel_o := 2**ceil(log2(opspe)))}];
     local half activations[{cel_o}];
+
+    local half preactivation[{rank}][{opspe}];
+    local half linop[{cel_o}];
+    //local half preactivation[{opspe}];
+
+    local half maxer[{opspe//2+1}];
     local half sumer[{opspe//2+1}];
+
+    local half reddt[{opspe//2+1}];
+    local half t;
+
+    """
+redue = lambda souce, auval, fn: f"""
+    if (locl1 < {cel_o - opspe})
+        {souce}[{opspe}+locl1] = {auval};
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (locl0 && locl%2 == 0)
+    {{
+        reddt[locl1/2] = {fn}({souce}[locl1], {souce}[locl1+1]);
+
+        //{( depth := ceil(log2(opspe))-1 )}
+        {"".join(f"""
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (locl1%{2**(n+1)} == 0)
+        {{
+            reddt[locl1/{2**(n+1)}] = {fn}(reddt[locl1/{2**n}], reddt[locl1/{2**n}+1]);
+            """ for n in range(1, depth+1)) }
+        { "}"*depth }
+    }}
     """
 irlop = lambda ipnex=None: f"""
     preactivation[locl0][locl1] = {weights.access(f"locl0, {"input" if ipnex is None else f"output[{ipnex}]"} ,0")} * {weights.access("locl0,locl1,1")};
 
-    // activation
+    // linear output
+    barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
     {{
-        barrier(CLK_LOCAL_MEM_FENCE);
         half sum = 0.0f;
         for (int i = 0; i < {rank}; i++)
             sum += preactivation[i][locl1];
-        noled[locl1] = atan(sum) + M_PI_2_H;
-        //activations[locl1] = sum / (1+fabs(sum));
+        linop[locl1] = sum * {alpha-1}h;
     }}
-    else if (locl1 < {cel_o - opspe})
-        noled[{opspe}+locl1] = 0;
 
-    if (locl1%2 == 0 && locl0)
-    {{
-        barrier(CLK_LOCAL_MEM_FENCE);
-        sumer[locl1/2] = noled[locl1] + noled[locl1+1];
-        //{( depth := ceil(log2(opspe))-1 )}
-        {"".join(f"""
-        if (locl1%{2**(n+1)} == 0)
-        {{
-            barrier(CLK_LOCAL_MEM_FENCE);
-            sumer[locl1/{2**(n+1)}] = sumer[locl1/{2**n}] + sumer[locl1/{2**n}+1];
-            """ for n in range(1, depth+1)) }
-        { "}"*depth }
-    }}
-    if (locl0)
-    {{
-        barrier(CLK_LOCAL_MEM_FENCE);
-        noled[locl1] /= sumer[0];
-    }}
+    {redue("linop", "-HUGE_VAL", "max")}
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (!locl)
+        t = reddt[0] + (pow({opspe}.h, {1-alpha}h) - 1) / 2;
+
+    #define sum(q,w) q+w
+    {redue("linop", "0.0h", "sum")}
 
     // argmax
+    /*
     {"" if ipnex is None else f"""
     else if (locl1 < {cel_o - opspe})
         activations[{opspe}+locl1] = -2;
@@ -138,6 +154,7 @@ irlop = lambda ipnex=None: f"""
         {"}"*depth}
     }}
     """}
+    */
     """
 
 kernel = f"""
@@ -153,14 +170,7 @@ kernel void error ({", ".join([ weights.text(), error.text(1), "int input, int c
     {irlop()}
     if (locl0)
     {{
-        error[locl1] = noled[locl1];
-        /*
-        if (coect == locl1)
-            error[locl1] = activations[locl1]+1;
-        else
-            error[locl1] = 1-activations[locl1];
-        error[locl1] = fabs(error[locl1]);
-        */
+        error[locl1] = linop[locl1];
     }}
 }}
 """
