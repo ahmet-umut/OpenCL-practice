@@ -59,13 +59,11 @@ irie = f"""
     int locl1 = get_local_id(1);
     int locl = locl1*{rank} + locl0;
 
-    local uchar indis[{vo_se//2+1}]; // to be deleted, reddt is used for all reductions.
-    local half activations[{(cel_o := 2**ceil(log2(vo_se)))}]; // to be deleted, activations are not used for now. Layers are : input -> opspe x 2 -> 2 x opspe -> alpha-entmax
-
+    //{( cel_o := 2**ceil(log2(vo_se)) )} //next power of 2 from vo_se
     local half preactivation[{rank}][{vo_se}];
     local half linop[{cel_o}];
-    local half reddt[{vo_se//2+1}];
-    local half tau,taumn,taumx; //tau in alpha-entmax 
+    local half reddt[{vo_se//2+1}]; local char cr_rt[{vo_se//2+1}];
+    local half tau,taumn,taumx, z[{cel_o}]; //for finding tau in alpha-entmax 
     """
 # Reduction macro. Reduces to reddt[0] in log(opspe steps.)
 redue = lambda souce, auval, fn: f"""
@@ -114,10 +112,11 @@ irlop = lambda ipnex=None: f"""
     barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl)
         tau = (taumn + taumx) / 2;
+    
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
-        activations[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
-    {redue("activations", "0.0h", "add")}
+        z[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
+    {redue("z", "0.0h", "add")}
     
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
@@ -133,6 +132,7 @@ kernel void infer (constant half* _weights, global int* output)
 {{
     constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
+    #define vote(a,b) (linop[locl1] if (a<)
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
         irlop(ipnex) + 
         f"""
