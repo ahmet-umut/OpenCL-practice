@@ -4,7 +4,7 @@ import pyopencl.cltypes as clypes
 import numpy
 from math import *
 
-coext = opencl.create_some_context(answers=[""])
+coext = opencl.create_some_context(answers=[open("anser.txt").read()])
 queue = opencl.CommandQueue(coext)
 
 string = "Biz "
@@ -12,7 +12,7 @@ volary = "".join(list(set(string)))
 mbedin = {char: volary.index(char) for char in string}
 
 #zero-copy array
-def rcopa(shape, adiid=False, dtype=clypes.half):
+def zerocopa(shape, adiid=False, dtype=clypes.half):
     np_dtype = numpy.float16 if dtype == clypes.half else numpy.int32
     host_array = opencl.csvm_empty(coext, shape, np_dtype, queue=queue)
     if adiid:
@@ -23,13 +23,13 @@ def rcopa(shape, adiid=False, dtype=clypes.half):
     cl_buf.host_array = host_array
     return cl_buf
 
-oplt=3
+optlt=3
 rank=2
-opspe=len(volary)
+vo_se=len(volary)
 
-weights = rcopa((rank,opspe,2), 1)
-output = rcopa((oplt+1,), 0, clypes.int)
-error = rcopa((opspe,))
+weights = zerocopa((rank,vo_se,2), 1)
+output = zerocopa((optlt+1,), 0, clypes.int)
+error = zerocopa((vo_se,))
 
 output.host_array[0] = mbedin[string[0]]
 
@@ -59,24 +59,24 @@ irie = f"""
     int locl1 = get_local_id(1);
     int locl = locl1*{rank} + locl0;
 
-    local uchar indis[{opspe//2+1}]; // to be deleted, reddt is used for all reductions.
-    local half activations[{(cel_o := 2**ceil(log2(opspe)))}]; // to be deleted, activations are not used for now. Layers are : input -> opspe x 2 -> 2 x opspe -> alpha-entmax
+    local uchar indis[{vo_se//2+1}]; // to be deleted, reddt is used for all reductions.
+    local half activations[{(cel_o := 2**ceil(log2(vo_se)))}]; // to be deleted, activations are not used for now. Layers are : input -> opspe x 2 -> 2 x opspe -> alpha-entmax
 
-    local half preactivation[{rank}][{opspe}];
+    local half preactivation[{rank}][{vo_se}];
     local half linop[{cel_o}];
-    local half reddt[{opspe//2+1}];
+    local half reddt[{vo_se//2+1}];
     local half tau,taumn,taumx; //tau in alpha-entmax 
     """
 # Reduction macro. Reduces to reddt[0] in log(opspe steps.)
 redue = lambda souce, auval, fn: f"""
-    if (locl1 < {cel_o - opspe})
-        {souce}[{opspe}+locl1] = {auval};
+    if (locl1 < {cel_o - vo_se})
+        {souce}[{vo_se}+locl1] = {auval};
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0 && locl1%2 == 0)
     {{
         reddt[locl1/2] = {fn}({souce}[locl1], {souce}[locl1+1]);
 
-        //{( depth := ceil(log2(opspe))-1 )}
+        //{( depth := ceil(log2(vo_se))-1 )}
         {"".join(f"""
         barrier(CLK_LOCAL_MEM_FENCE);
         if (locl1%{2**(n+1)} == 0)
@@ -108,7 +108,7 @@ irlop = lambda ipnex=None: f"""
     if (!locl)
     {{
         taumn = reddt[0] - 1;
-        taumx = reddt[0] - pow({opspe}.h, {1-alpha}h);
+        taumx = reddt[0] - pow({vo_se}.h, {1-alpha}h);
     }}
 
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -122,10 +122,6 @@ irlop = lambda ipnex=None: f"""
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
         linop[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h) / reddt[0];
-    
-    // legacy code to be removed:
-
-    // output
     """
 
 kernel = f"""
@@ -143,8 +139,8 @@ kernel void infer (constant half* _weights, global int* output)
         barrier(CLK_LOCAL_MEM_FENCE);
         if (!locl)
         {{
-            half random = {numpy.random.rand():.6f}h;
-            for (int i = 0; i < {opspe}; i++)
+            half random = {numpy.random.rand():.1f}h;
+            for (int i = 0; i < {vo_se}; i++)
             {{
                 random -= linop[i];
                 if (random <= 0.h)
@@ -155,14 +151,13 @@ kernel void infer (constant half* _weights, global int* output)
             }}
         }}
         """
-    for ipnex in range(oplt))}}}
+    for ipnex in range(optlt))}}}
 }}
 kernel void error (constant half* _weights, {error.text(1)}, int input, int coect)
 {{
     constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     {irlop()}
-    barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0)
     {{
         error[locl1] = linop[locl1];
@@ -173,16 +168,15 @@ kernel void error (constant half* _weights, {error.text(1)}, int input, int coec
 print(kernel)
 
 # Build and run
-# import struct
 prg = opencl.Program(coext, kernel).build()
 
 #run kernels with zero-copy buffers
-prg.infer(queue, (rank,opspe), None, weights, output)
-prg.error(queue, (rank,opspe), None, weights, error, numpy.int32(mbedin[string[0]]), numpy.int32(mbedin[string[1]]))
+prg.infer(queue, (rank,vo_se), None, weights, output)
+prg.error(queue, (rank,vo_se), None, weights, error, numpy.int32(mbedin[string[0]]), numpy.int32(mbedin[string[1]]))
 queue.finish()
 
 print(f"Weights \n{weights.host_array}")
 print(f"volary: *{volary}*")
 print(f"inference sequence {output.host_array}")
-print(f"decoded: {''.join(volary[output.host_array[i]] for i in range(oplt+1))}")
+print(f"decoded: {''.join(volary[output.host_array[i]] for i in range(optlt+1))}")
 print(f"Error {error.host_array}")
