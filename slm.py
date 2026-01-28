@@ -62,7 +62,7 @@ irie = f"""
     //{( cel_o := 2**ceil(log2(vo_se)) )} //next power of 2 from vo_se
     local half preactivation[{rank}][{vo_se}];
     local half linop[{cel_o}];
-    local half reddt[{vo_se//2+1}]; local char cr_rt[{vo_se//2+1}];
+    local half reddt[{vo_se//2+1}];
     local half tau,taumn,taumx, z[{cel_o}]; //for finding tau in alpha-entmax 
     """
 # Reduction macro. Reduces to reddt[0] in log(opspe steps.)
@@ -132,24 +132,30 @@ kernel void infer (constant half* _weights, global int* output)
 {{
     constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
-    #define vote(a,b) (linop[locl1] if (a<)
+    local char cf_rt[{optlt}];
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
         irlop(ipnex) + 
         f"""
+        if (locl1 < {cel_o - vo_se})
+            linop[{vo_se}+locl1] = 0;
         barrier(CLK_LOCAL_MEM_FENCE);
-        if (!locl)
+        if (locl0 && locl1%2 == 0)
         {{
-            half random = {numpy.random.rand():.1f}h;
-            for (int i = 0; i < {vo_se}; i++)
+            reddt[locl1/2] = linop[locl1] + linop[locl1+1];
+            cf_rt[locl1/2] = {numpy.random.rand():f}h * reddt[locl1/2] < linop[locl1] ? locl1 : locl1+1;
+
+            //{( depth := ceil(log2(vo_se))-1 )}
+            {"".join(f"""
+            barrier(CLK_LOCAL_MEM_FENCE);
+            if (locl1%{2**(n+1)} == 0)
             {{
-                random -= linop[i];
-                if (random <= 0.h)
-                {{
-                    output[{ipnex+1}] = i;
-                    break;
-                }}
-            }}
+                reddt[locl1/{2**(n+1)}] = reddt[locl1/{2**n}] + reddt[locl1/{2**n}+1];
+                cf_rt[locl1/{2**(n+1)}] = {numpy.random.rand():f}h * reddt[locl1/{2**(n+1)}] < reddt[locl1/{2**n}] ? cf_rt[locl1/{2**n}] : cf_rt[locl1/{2**n}+1];
+                """ for n in range(1, depth+1)) }
+            { "}"*depth }
         }}
+        if (!locl)
+            output[{ipnex+1}] = cf_rt[0];
         """
     for ipnex in range(optlt))}}}
 }}
