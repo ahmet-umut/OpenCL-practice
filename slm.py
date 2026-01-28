@@ -1,7 +1,7 @@
 import pyopencl as cl
 import pyopencl.cltypes as cltypes
 import numpy as np
-from math import *
+from math import ceil, log2
 
 cl_context = cl.create_some_context(answers=["1"])
 cl_queue = cl.CommandQueue(cl_context)
