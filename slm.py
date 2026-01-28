@@ -1,188 +1,192 @@
-from numpy.random import f
-import pyopencl as opencl
-import pyopencl.cltypes as clypes
-import numpy
+import pyopencl as cl
+import pyopencl.cltypes as cltypes
+import numpy as np
 from math import *
 
-coext = opencl.create_some_context(answers=[""])
-queue = opencl.CommandQueue(coext)
+cl_context = cl.create_some_context(answers=["1"])
+cl_queue = cl.CommandQueue(cl_context)
 
-string = "Biz "
-volary = "".join(list(set(string)))
-mbedin = {char: volary.index(char) for char in string}
+seed_text = "Biz "
+vocab = "".join(dict.fromkeys(seed_text))
+char_to_id = {c: vocab.index(c) for c in seed_text}
 
-#zero-copy array
-def rcopa(shape, adiid=False, dtype=clypes.half):
-    np_dtype = numpy.float16 if dtype == clypes.half else numpy.int32
-    host_array = opencl.csvm_empty(coext, shape, np_dtype, queue=queue)
-    if adiid:
-        host_array[:] = numpy.random.rand(*shape).astype(np_dtype)
-    cl_buf = opencl.SVM(host_array)
-    cl_buf.shape = shape
-    cl_buf.dtype = dtype
-    cl_buf.host_array = host_array
-    return cl_buf
+def alloc_svm(shape, init_random=False, dtype=cltypes.half):
+    np_dtype = np.float16 if dtype == cltypes.half else np.int32
+    host_array = cl.csvm_empty(cl_context, shape, np_dtype, queue=cl_queue)
+    if init_random:
+        host_array[:] = np.random.rand(*shape).astype(np_dtype)
+    buf = cl.SVM(host_array)
+    buf.shape = shape
+    buf.dtype = dtype
+    buf.host_array = host_array
+    return buf
 
-oplt=3
-rank=2
-opspe=len(volary)
+sequence_length = 3
+hidden_dim = 2
+vocab_size = len(vocab)
 
-weights = rcopa((rank,opspe,2), 1)
-output = rcopa((oplt+1,), 0, clypes.int)
-error = rcopa((opspe,))
+weights = alloc_svm((hidden_dim, vocab_size, 2), init_random=True)
+token_ids = alloc_svm((sequence_length + 1,), dtype=cltypes.int)
+logits = alloc_svm((vocab_size,))
 
-output.host_array[0] = mbedin[string[0]]
+token_ids.host_array[0] = char_to_id[seed_text[0]]
 
-class Agumen:
-    def __init__(self, cl_buf):
-        self.array = cl_buf
-        self.type = "half" if cl_buf.dtype == clypes.half else "int"
-        for name, value in globals().items():
-            if value is self.array:
-                self.name = name
+class KernelArg:
+    def __init__(self, buf):
+        self.buf = buf
+        self.cl_type = "half" if buf.dtype == cltypes.half else "int"
+        for k, v in globals().items():
+            if v is buf:
+                self.var_name = k
                 break
-        def text(self, globa=0):
-            return f"{"global" if globa else "constant"} {self.type}* {self.name}"
-        self.text = text
-        self.array.text = text.__get__(self)
+        def declaration(self, global_mem=False):
+            space = "global" if global_mem else "constant"
+            return f"{space} {self.cl_type}* {self.var_name}"
+        self.declaration = declaration
+        self.buf.declaration = declaration.__get__(self)
 
     def __getattr__(self, name):
-        return getattr(self.array, name)
+        return getattr(self.buf, name)
 
-Agumen(weights)
-Agumen(output)
-Agumen(error)
+KernelArg(weights)
+KernelArg(token_ids)
+KernelArg(logits)
 
 alpha = 1.1
-irie = f"""
-    int locl0 = get_local_id(0);
-    int locl1 = get_local_id(1);
-    int locl = locl1*{rank} + locl0;
+pad_size = 2 ** ceil(log2(vocab_size))
 
-    local uchar indis[{opspe//2+1}]; // to be deleted, reddt is used for all reductions.
-    local half activations[{(cel_o := 2**ceil(log2(opspe)))}]; // to be deleted, activations are not used for now. Layers are : input -> opspe x 2 -> 2 x opspe -> alpha-entmax
+kernel_locals = f"""
+int local_x = get_local_id(0);
+int local_y = get_local_id(1);
+int local_id = local_y * {hidden_dim} + local_x;
 
-    local half preactivation[{rank}][{opspe}];
-    local half linop[{cel_o}];
-    local half reddt[{opspe//2+1}];
-    local half tau,taumn,taumx; //tau in alpha-entmax 
-    """
-# Reduction macro. Reduces to reddt[0] in log(opspe steps.)
-redue = lambda souce, auval, fn: f"""
-    if (locl1 < {cel_o - opspe})
-        {souce}[{opspe}+locl1] = {auval};
+local half preactivation[{hidden_dim}][{vocab_size}];
+local half linear_output[{pad_size}];
+local half reduction_buffer[{vocab_size // 2 + 1}];
+local half activations[{pad_size}];
+local half tau, tau_min, tau_max;
+"""
+
+local_reduce = lambda source, padval, op: f"""
+if (local_y < {pad_size - vocab_size})
+    {source}[{vocab_size} + local_y] = {padval};
+barrier(CLK_LOCAL_MEM_FENCE);
+if (local_x && local_y % 2 == 0)
+{{
+    reduction_buffer[local_y / 2] = {op}({source}[local_y], {source}[local_y + 1]);
+    {''.join(f'''
     barrier(CLK_LOCAL_MEM_FENCE);
-    if (locl0 && locl1%2 == 0)
-    {{
-        reddt[locl1/2] = {fn}({souce}[locl1], {souce}[locl1+1]);
+    if (local_y % {2 ** (n + 1)} == 0)
+        reduction_buffer[local_y / {2 ** (n + 1)}] =
+            {op}(reduction_buffer[local_y / {2 ** n}],
+                 reduction_buffer[local_y / {2 ** n} + 1]);
+    ''' for n in range(1, ceil(log2(vocab_size))))}
+}}
+"""
 
-        //{( depth := ceil(log2(opspe))-1 )}
-        {"".join(f"""
-        barrier(CLK_LOCAL_MEM_FENCE);
-        if (locl1%{2**(n+1)} == 0)
-        {{
-            reddt[locl1/{2**(n+1)}] = {fn}(reddt[locl1/{2**n}], reddt[locl1/{2**n}+1]);
-            """ for n in range(1, depth+1)) }
-        { "}"*depth }
-    }}
-    """
-irlop = lambda ipnex=None: f"""
-    preactivation[locl0][locl1] = weights[locl0][{"input" if ipnex is None else f"output[{ipnex}]"}][0] * weights[locl0][locl1][1];
+forward_step = lambda step=None: f"""
+preactivation[local_x][local_y] =
+    weights[local_x][{"token_ids[" + str(step) + "]" if step is not None else "input"}][0] *
+    weights[local_x][local_y][1];
 
-    // linear output:
+barrier(CLK_LOCAL_MEM_FENCE);
+if (local_x)
+{{
+    half sum = 0.0h;
+    for (int i = 0; i < {hidden_dim}; i++)
+        sum += preactivation[i][local_y];
+    linear_output[local_y] = sum;
+}}
 
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (locl0)
-    {{
-        half sum = 0.0f;
-        for (int i = 0; i < {rank}; i++)
-            sum += preactivation[i][locl1];
-        linop[locl1] = sum;
-    }}
+{local_reduce("linear_output", "-HUGE_VAL", "max")}
+barrier(CLK_LOCAL_MEM_FENCE);
+if (!local_id)
+{{
+    tau_min = reduction_buffer[0] - 1;
+    tau_max = reduction_buffer[0] - pow({vocab_size}.h, {1 - alpha}h);
+    tau = (tau_min + tau_max) / 2;
+}}
+barrier(CLK_LOCAL_MEM_FENCE);
 
-    // entmax:
+if (local_x)
+    activations[local_y] =
+        pow(max(0.h, linear_output[local_y] - tau), {1 / (alpha - 1)}h);
 
-    // find tau (t)
-    {redue("linop", "-HUGE_VAL", "max")}
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (!locl)
-    {{
-        taumn = reddt[0] - 1;
-        taumx = reddt[0] - pow({opspe}.h, {1-alpha}h);
-    }}
+{local_reduce("activations", "0.h", "add")}
+barrier(CLK_LOCAL_MEM_FENCE);
 
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (!locl)
-        tau = (taumn + taumx) / 2;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (locl0)
-        activations[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
-    {redue("activations", "0.0h", "add")}
-    
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (locl0)
-        linop[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h) / reddt[0];
-    
-    // legacy code to be removed:
+if (local_x)
+    linear_output[local_y] =
+        pow(max(0.h, linear_output[local_y] - tau), {1 / (alpha - 1)}h) /
+        reduction_buffer[0];
+"""
 
-    // output
-    """
-
-kernel = f"""
+kernel_source = f"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #define add(a,b) ((a)+(b))
 
-// kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
-kernel void infer (constant half* _weights, global int* output)
+kernel void sample_sequence({weights.declaration()}, {token_ids.declaration(True)})
 {{
-    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
-    {irie}
-    {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
-        irlop(ipnex) + 
-        f"""
+    constant half (*weights)[{vocab_size}][2] =
+        (constant half (*)[{vocab_size}][2])weights;
+    {kernel_locals}
+    barrier(CLK_LOCAL_MEM_FENCE);
+    {''.join(
+        forward_step(i) + f'''
         barrier(CLK_LOCAL_MEM_FENCE);
-        if (!locl)
+        if (!local_id)
         {{
-            half random = {numpy.random.rand():.6f}h;
-            for (int i = 0; i < {opspe}; i++)
+            half sample_threshold = {np.random.rand():.6f}h;
+            for (int j = 0; j < {vocab_size}; j++)
             {{
-                random -= linop[i];
-                if (random <= 0.h)
+                sample_threshold -= linear_output[j];
+                if (sample_threshold <= 0.h)
                 {{
-                    output[{ipnex+1}] = i;
+                    token_ids[{i + 1}] = j;
                     break;
                 }}
             }}
         }}
-        """
-    for ipnex in range(oplt))}}}
+        ''' for i in range(sequence_length)
+    )}
 }}
-kernel void error (constant half* _weights, {error.text(1)}, int input, int coect)
+
+kernel void compute_logits({weights.declaration()}, {logits.declaration(True)}, int input, int target)
 {{
-    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
-    {irie}
-    {irlop()}
+    constant half (*weights)[{vocab_size}][2] =
+        (constant half (*)[{vocab_size}][2])weights;
+    {kernel_locals}
+    {forward_step()}
     barrier(CLK_LOCAL_MEM_FENCE);
-    if (locl0)
-    {{
-        error[locl1] = linop[locl1];
-    }}
+    if (local_x)
+        logits[local_y] = linear_output[local_y];
 }}
 """
 
-print(kernel)
+program = cl.Program(cl_context, kernel_source).build()
 
-# Build and run
-# import struct
-prg = opencl.Program(coext, kernel).build()
+program.sample_sequence(
+    cl_queue,
+    (hidden_dim, vocab_size),
+    None,
+    weights,
+    token_ids
+)
 
-#run kernels with zero-copy buffers
-prg.infer(queue, (rank,opspe), None, weights, output)
-prg.error(queue, (rank,opspe), None, weights, error, numpy.int32(mbedin[string[0]]), numpy.int32(mbedin[string[1]]))
-queue.finish()
+program.compute_logits(
+    cl_queue,
+    (hidden_dim, vocab_size),
+    None,
+    weights,
+    logits,
+    np.int32(char_to_id[seed_text[0]]),
+    np.int32(char_to_id[seed_text[1]])
+)
 
-print(f"Weights \n{weights.host_array}")
-print(f"volary: *{volary}*")
-print(f"inference sequence {output.host_array}")
-print(f"decoded: {''.join(volary[output.host_array[i]] for i in range(oplt+1))}")
-print(f"Error {error.host_array}")
+cl_queue.finish()
+
+print(weights.host_array)
+print(vocab)
+print(token_ids.host_array)
+print("".join(vocab[token_ids.host_array[i]] for i in range(sequence_length + 1)))
+print(logits.host_array)
