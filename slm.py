@@ -29,7 +29,7 @@ vo_se=len(volary)
 
 weights = zerocopa((rank,vo_se,2), 1)
 output = zerocopa((optlt+1,), 0, clypes.int)
-error = zerocopa((vo_se,))
+error = zerocopa((1,))
 
 output.host_array[0] = mbedin[string[0]]
 
@@ -117,10 +117,6 @@ irlop = lambda ipnex=None: f"""
     if (locl0)
         z[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
     {redue("z", "0.0h", "add")}
-    
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (locl0)
-        linop[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h) / reddt[0];
     """
 
 kernel = f"""
@@ -136,6 +132,11 @@ kernel void infer (constant half* _weights, global int* output)
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
         irlop(ipnex) + 
         f"""
+        // actually compute every token's probability for sampling from the distribution
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (locl0)
+            linop[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h) / reddt[0];
+    
         if (locl1 < {cel_o - vo_se})
             linop[{vo_se}+locl1] = 0;
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -164,10 +165,9 @@ kernel void error (constant half* _weights, {error.text(1)}, int input, int coec
     constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     {irlop()}
-    if (locl0)
-    {{
-        error[locl1] = linop[locl1];
-    }}
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (locl==coect)
+        error[0] = -log(pow(max(0.h, linop[coect] - tau), {1/(alpha - 1)}h) / reddt[0]);   // cross-entropy loss
 }}
 """
 
