@@ -53,7 +53,7 @@ Agumen(weights)
 Agumen(output)
 Agumen(error)
 
-# lower bound: 1.0003 - upper bound: 3.3972
+# lower bound: 1.0003 - upper bound: 2.3414
 alpha = 1.5
 irie = f"""
     int locl0 = get_local_id(0);
@@ -170,18 +170,13 @@ kernel void infer (global int* output)
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
         irlop(ipnex) + 
         f"""
-        // actually compute every token's probability for sampling from the distribution
-        barrier(CLK_LOCAL_MEM_FENCE);
-        if (!locl0)
-            linop[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);  // linop already pre-scaled
-    
         if (!locl0 && locl1 < {cel_o - vo_se})
-            linop[{vo_se}+locl1] = 0;
+            z[0][{vo_se}+locl1] = 0;
         barrier(CLK_LOCAL_MEM_FENCE);
         if (!locl0 && locl1%2 == 0)
         {{
-            reddt[0][locl1/2] = linop[locl1] + linop[locl1+1];
-            cf_rt[locl1/2] = random[{ipnex}] * reddt[0][locl1/2] < linop[locl1] ? locl1 : locl1+1;
+            reddt[0][locl1/2] = z[0][locl1] + z[0][locl1+1];
+            cf_rt[locl1/2] = random[{ipnex}] * reddt[0][locl1/2] < z[0][locl1] ? locl1 : locl1+1;
 
             //{( depth := ceil(log2(vo_se))-1 )}
             {"".join(f"""
@@ -204,16 +199,15 @@ kernel void error (global half* error)
     {irie}
     {irlop()}
     barrier(CLK_LOCAL_MEM_FENCE);
-    /*
-    if (locl==0)
-        error[0] = -log(pow(max(0.h, linop[coect] - tau), {1/(alpha - 1)}h));   // cross-entropy loss
-    else if (locl==1)
-        error[1] = pow(max(0.h, linop[coect] - tau), {1/(alpha - 1)}h);
-    else if (locl==2)
-        error[2] = -log(max(0.h, linop[coect] - tau)) / {alpha - 1}h;
-    */
-    if (!locl0)
-        error[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
+    if (locl0 == 0)
+    {{
+        /*
+        half relu = max(0.h, linop[coect] - tau);
+        if (relu > 0.h)
+            error[0] = -log(relu) / {alpha - 1}h;   // cross-entropy loss
+        */
+        error[locl1] = z[0][locl1] - (locl1==coect);
+    }}
 }}
 """
 
