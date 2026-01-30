@@ -53,7 +53,8 @@ Agumen(weights)
 Agumen(output)
 Agumen(error)
 
-alpha = 1.0006
+# lower bound: 1.0003 - upper bound: 3.3972
+alpha = 1.5
 irie = f"""
     int locl0 = get_local_id(0);
     int locl1 = get_local_id(1);
@@ -63,7 +64,8 @@ irie = f"""
     local half preactivation[{rank}][{vo_se}];
     local half linop[{cel_o}];
     local half reddt[3][{vo_se//2+1}];
-    local half tau,taumn,taumx, z[3][{cel_o}], Z; //for finding tau in alpha-entmax 
+    local half tau,taumn,taumx, z[3][{cel_o}], Z; //for finding tau in alpha-entmax
+    local int converged;
     """
 # Reduction macro. Reduces to reddt[0] in log(opspe steps.)
 redue = lambda souce, auval, fn: f"""
@@ -96,30 +98,31 @@ irlop = lambda ipnex=None: f"""
         half sum = 0.0f;
         for (int i = 0; i < {rank}; i++)
             sum += preactivation[i][locl1];
-        linop[locl1] = sum;
+        linop[locl1] = sum * {alpha-1}h;  // pre-scale for entmax
     }}
 
     // find tau for alpha entmax:
 
     //initialize
+    barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl0)
     {{
-        barrier(CLK_LOCAL_MEM_FENCE);
         {redue("linop", "-HUGE_VAL", "max")}
     }}
     barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl)
     {{
-        taumn = reddt[0][0] * {alpha-1}h - 1;
-        taumx = reddt[0][0] * {alpha-1}h - pow({vo_se}.h, {1-alpha}h);
+        taumn = reddt[0][0] - 1;
+        taumx = reddt[0][0] - pow({vo_se}.h, {1-alpha}h);
         tau = (taumn + taumx) / 2;
+        converged = 0;
     }}
 
-    for (int iter = 0; iter < 99; iter++)
+    for (int iter = 0; iter < 1; iter++)
     {{
         //compute f, f', f''
         barrier(CLK_LOCAL_MEM_FENCE);
-        z[locl0][locl1] = pow(max(0.h, linop[locl1] * {alpha-1}h - tau), {1/(alpha - 1)}h - locl0);
+        z[locl0][locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h - locl0);
         barrier(CLK_LOCAL_MEM_FENCE);
         {redue("z[locl0]", "0.0h", "add")}
 
@@ -127,29 +130,28 @@ irlop = lambda ipnex=None: f"""
         if (!locl)
         {{
             half f = reddt[0][0] - 1;
-            if (f < 0)
-                taumn = tau;
-            else
-                taumx = tau;
+            if (f != 0)
+            {{
+                if (f < 0)
+                    taumx = tau;  // sum < 1 means tau too high
+                else
+                    taumn = tau;  // sum > 1 means tau too low
 
-            half ff = reddt[1][0] / {1-alpha}h;
-            half fff = reddt[2][0] / {(2-alpha) / (alpha-1)**2}h;
-        
-            half h = tau - 2*f*ff / (2*ff*ff - f*fff);
-        
-            /*
-            if (h > taumn && h < taumx)
-                tau = h;
+                half ff = reddt[1][0] / {1-alpha}h;
+                half fff = reddt[2][0] / {(2-alpha) / (alpha-1)**2}h;
+
+                half h = tau - 2*f*ff / (2*ff*ff - f*fff);
+
+                if (h < taumn || h > taumx)
+                    tau = (taumn+taumx)/2;
+                else
+                    tau = h;
+            }}
             else
-                tau = (taumn + taumx) / 2;
-            */
-            if (h <= taumn)
-                tau = taumn;
-            else if (h >= taumx)
-                tau = taumx;
-            else
-                tau = h;
+                converged = 1;
         }}
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (converged) break;
     }}
     """
 
@@ -171,7 +173,7 @@ kernel void infer (global int* output)
         // actually compute every token's probability for sampling from the distribution
         barrier(CLK_LOCAL_MEM_FENCE);
         if (!locl0)
-            linop[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
+            linop[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);  // linop already pre-scaled
     
         if (!locl0 && locl1 < {cel_o - vo_se})
             linop[{vo_se}+locl1] = 0;
@@ -211,7 +213,7 @@ kernel void error (global half* error)
         error[2] = -log(max(0.h, linop[coect] - tau)) / {alpha - 1}h;
     */
     if (!locl0)
-        error[locl1] = pow(max(0.h, linop[locl1] * {alpha-1}h - tau), {1/(alpha - 1)}h);
+        error[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
 }}
 """
 
