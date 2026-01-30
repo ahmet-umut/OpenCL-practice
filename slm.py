@@ -29,10 +29,13 @@ vo_se=len(volary)
 
 weights = zerocopa((rank,vo_se,2), 1)
 output = zerocopa((optlt+1,), 0, clypes.int)
-error = zerocopa((vo_se,))
+error = zerocopa((1,))
+debug = zerocopa((vo_se,2))
 
 output.host_array[0] = mbedin[string[0]]
 
+#agumen (legacy)
+"""
 class Agumen:
     def __init__(self, cl_buf):
         self.array = cl_buf
@@ -52,6 +55,8 @@ class Agumen:
 Agumen(weights)
 Agumen(output)
 Agumen(error)
+Agumen(debug)
+"""
 
 # lower bound: 1.0003 - upper bound: 2.3414
 alpha = 1.5
@@ -88,26 +93,21 @@ irie = f"""
     local int converged;
     """
 irlop = lambda ipnex=None: f"""
+    // linear layer:
+
     if (locl0 < {rank})
         preactivation[locl0][locl1] = weights[locl0][{"input" if ipnex is None else f"output[{ipnex}]"}][0] * weights[locl0][locl1][1];
 
-    // linear output:
-
     barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl0)
-    {{
-        half sum = 0.0f;
-        for (int i = 0; i < {rank}; i++)
-            sum += preactivation[i][locl1];
-        linop[locl1] = (scors[locl1] = sum) * {alpha-1}h;  // pre-scale for entmax
-    }}
+        linop[locl1] = (scors[locl1] = {"+".join(f"preactivation[{i}][locl1]" for i in range(rank))}) * {alpha-1}h;  // pre-scaled sum of inputs for entmax
 
     // find tau for alpha entmax:
 
     //initialize
-    barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl0)
     {{
+        barrier(CLK_LOCAL_MEM_FENCE);
         {redue("linop", "-HUGE_VAL", "max")}
     }}
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -159,13 +159,12 @@ irlop = lambda ipnex=None: f"""
 kernel = f"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #define add(a,b) ((a)+(b))
-
-constant half weights{"".join(f"[{dimen}]" for dimen in weights.shape)} = {{ {", ".join(f"{i:f}h" for i in weights.host_array.flatten())} }};
+constant half _weights{"".join(f"[{dimen}]" for dimen in weights.shape)} = {{ {", ".join(f"{i:f}h" for i in weights.host_array.flatten())} }};
 
 kernel void infer (global int* output)
 {{
     constant half random[] = {{{", ".join(f"{numpy.random.rand():f}h" for _ in range(optlt))}}};
-    //constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
+    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     local char cf_rt[{optlt}];
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
@@ -194,19 +193,55 @@ kernel void infer (global int* output)
         """
     for ipnex in range(optlt))}}}
 }}
-kernel void error (global half* error)
+kernel void loss (global half* error)
 {{
     constant char input = {mbedin[string[0]]}, coect = {mbedin[string[1]]};
+    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     {irlop()}
     barrier(CLK_LOCAL_MEM_FENCE);
-    if (locl0 == 0)
+
+    // alpha-entmax loss
+    local half array[{vo_se}];
+    if (!locl0)
     {{
-        // alpha-entmax loss
-        error[locl1] = (z[0][locl1] - (locl1==coect)) * scors[locl1] + (z[0][locl1] - pow(z[0][locl1], {alpha}h));
-        {redue("error", "0.0h", "add")}
+        array[locl1] = (z[0][locl1] - (locl1==coect)) * scors[locl1] + (z[0][locl1] - pow(z[0][locl1], {alpha}h));
+        barrier(CLK_LOCAL_MEM_FENCE);
+        {redue("array", "0.0h", "add")}
         if (!locl)
             error[0] = reddt[0][0] / {alpha * (alpha - 1)}h;
+    }}
+}}
+kernel void train (global half* _debug)
+{{
+    {irie}
+    local half weights{"".join(f"[{dimen}]" for dimen in weights.shape)};
+    if (locl0 < {rank})
+        weights[locl0][locl1][0] = _weights[locl0][locl1][0],
+        weights[locl0][locl1][1] = _weights[locl0][locl1][1];
+    
+    constant char input = {mbedin[string[0]]}, coect = {mbedin[string[1]]};
+    {irlop()}
+    global half (*debug){"".join(f"[{dimen}]" for dimen in debug.shape[1:])} = (global half (*){"".join(f"[{dimen}]" for dimen in debug.shape[1:])})_debug;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    local half gadien[{vo_se}];
+    if (!locl0)
+    {{
+        debug[locl1][0] = z[0][locl1] - (locl1==coect);
+
+        gadien[locl1] = z[0][locl1] - (locl1==coect);
+    }}
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (!locl)
+    {{
+        debug[0][1] = weights[1][input][0];
+        debug[1][1] = weights[1][2][1];
+
+        weights[1][2][1] -= gadien[2] * weights[1][input][0];
+
+        debug[2][1] = weights[1][2][1];
+        //debug[3][1] = coect;
     }}
 }}
 """
@@ -218,11 +253,13 @@ prg = opencl.Program(coext, kernel).build()
 
 #run kernels with zero-copy buffers
 prg.infer(queue, (max(rank,3), vo_se), None, output)
-prg.error(queue, (max(rank,3), vo_se), None, error)
+prg.loss(queue, (max(rank,3), vo_se), None, error)
+prg.train(queue, (max(rank,3), vo_se), None, debug)
 queue.finish()
 
-print(f"Weights \n{weights.host_array}")
+#print(f"Weights \n{weights.host_array}")
 print(f"volary: *{volary}*")
-print(f"inference sequence {output.host_array}")
+#print(f"inference sequence {output.host_array}")
 print(f"decoded: {''.join(volary[output.host_array[i]] for i in range(optlt+1))}")
 print(f"Error {error.host_array}")
+print(f"train Debug: \n{debug.host_array}")
