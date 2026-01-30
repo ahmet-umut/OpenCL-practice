@@ -157,11 +157,12 @@ kernel = f"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #define add(a,b) ((a)+(b))
 
-// kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
-kernel void infer (constant half* _weights, global int* output)
+constant half weights{"".join(f"[{dimen}]" for dimen in weights.shape)} = {{ {", ".join(f"{i:f}h" for i in weights.host_array.flatten())} }};
+
+kernel void infer (global int* output)
 {{
     constant half random[] = {{{", ".join(f"{numpy.random.rand():f}h" for _ in range(optlt))}}};
-    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
+    //constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     local char cf_rt[{optlt}];
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
@@ -195,9 +196,10 @@ kernel void infer (constant half* _weights, global int* output)
         """
     for ipnex in range(optlt))}}}
 }}
-kernel void error (constant half* _weights, {error.text(1)}, int input, int coect)
+kernel void error (global half* error)
 {{
-    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
+    constant char input = {mbedin[string[0]]}, coect = {mbedin[string[1]]};
+    //constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     {irlop()}
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -216,8 +218,8 @@ print(kernel)
 prg = opencl.Program(coext, kernel).build()
 
 #run kernels with zero-copy buffers
-prg.infer(queue, (max(rank,3), vo_se), None, weights, output)
-prg.error(queue, (max(rank,3), vo_se), None, weights, error, numpy.int32(mbedin[string[0]]), numpy.int32(mbedin[string[1]]))
+prg.infer(queue, (max(rank,3), vo_se), None, output)
+prg.error(queue, (max(rank,3), vo_se), None, error)
 queue.finish()
 
 print(f"Weights \n{weights.host_array}")
