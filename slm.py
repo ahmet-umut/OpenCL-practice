@@ -53,7 +53,7 @@ Agumen(weights)
 Agumen(output)
 Agumen(error)
 
-alpha = 1.003
+alpha = 1.01
 irie = f"""
     int locl0 = get_local_id(0);
     int locl1 = get_local_id(1);
@@ -115,7 +115,7 @@ irlop = lambda ipnex=None: f"""
         tau = (taumn + taumx) / 2;
     }}
 
-    for (int iter = 0; iter < 1; iter++)
+    for (int iter = 0; iter < 99; iter++)
     {{
         //compute f, f', f''
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -137,18 +137,18 @@ irlop = lambda ipnex=None: f"""
         
             half h = tau - 2*f*ff / (2*ff*ff - f*fff);
         
-            /*
             if (h > taumn && h < taumx)
                 tau = h;
             else
                 tau = (taumn + taumx) / 2;
-            */
+            /*
             if (h <= taumn)
                 tau = taumn;
             else if (h >= taumx)
                 tau = taumx;
             else
                 tau = h;
+            */
         }}
     }}
     """
@@ -160,6 +160,7 @@ kernel = f"""
 // kernel void infer ({", ".join([ weights.text(), output.text(1) ])})
 kernel void infer (constant half* _weights, global int* output)
 {{
+    constant half random[] = {{{", ".join(f"{numpy.random.rand():f}h" for _ in range(optlt))}}};
     constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     local char cf_rt[{optlt}];
@@ -177,7 +178,7 @@ kernel void infer (constant half* _weights, global int* output)
         if (!locl0 && locl1%2 == 0)
         {{
             reddt[0][locl1/2] = linop[locl1] + linop[locl1+1];
-            cf_rt[locl1/2] = {numpy.random.rand()}h * reddt[0][locl1/2] < linop[locl1] ? locl1 : locl1+1;
+            cf_rt[locl1/2] = random[{ipnex}] * reddt[0][locl1/2] < linop[locl1] ? locl1 : locl1+1;
 
             //{( depth := ceil(log2(vo_se))-1 )}
             {"".join(f"""
@@ -185,7 +186,7 @@ kernel void infer (constant half* _weights, global int* output)
             if (locl1%{2**(n+1)} == 0)
             {{
                 reddt[0][locl1/{2**(n+1)}] = reddt[0][locl1/{2**n}] + reddt[0][locl1/{2**n}+1];
-                cf_rt[locl1/{2**(n+1)}] = {numpy.random.rand()}h * reddt[0][locl1/{2**(n+1)}] < reddt[0][locl1/{2**n}] ? cf_rt[locl1/{2**n}] : cf_rt[locl1/{2**n}+1];
+                cf_rt[locl1/{2**(n+1)}] = random[{ipnex}] * reddt[0][locl1/{2**(n+1)}] < reddt[0][locl1/{2**n}] ? cf_rt[locl1/{2**n}] : cf_rt[locl1/{2**n}+1];
                 """ for n in range(1, depth+1)) }
             { "}"*depth }
         }}
