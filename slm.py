@@ -53,7 +53,7 @@ Agumen(weights)
 Agumen(output)
 Agumen(error)
 
-alpha = 1.01
+alpha = 1.0006
 irie = f"""
     int locl0 = get_local_id(0);
     int locl1 = get_local_id(1);
@@ -110,8 +110,8 @@ irlop = lambda ipnex=None: f"""
     barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl)
     {{
-        taumn = reddt[0][0] - 1;
-        taumx = reddt[0][0] - pow({vo_se}.h, {1-alpha}h);
+        taumn = reddt[0][0] * {alpha-1}h - 1;
+        taumx = reddt[0][0] * {alpha-1}h - pow({vo_se}.h, {1-alpha}h);
         tau = (taumn + taumx) / 2;
     }}
 
@@ -119,7 +119,7 @@ irlop = lambda ipnex=None: f"""
     {{
         //compute f, f', f''
         barrier(CLK_LOCAL_MEM_FENCE);
-        z[locl0][locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h - locl0);
+        z[locl0][locl1] = pow(max(0.h, linop[locl1] * {alpha-1}h - tau), {1/(alpha - 1)}h - locl0);
         barrier(CLK_LOCAL_MEM_FENCE);
         {redue("z[locl0]", "0.0h", "add")}
 
@@ -137,18 +137,18 @@ irlop = lambda ipnex=None: f"""
         
             half h = tau - 2*f*ff / (2*ff*ff - f*fff);
         
+            /*
             if (h > taumn && h < taumx)
                 tau = h;
             else
                 tau = (taumn + taumx) / 2;
-            /*
+            */
             if (h <= taumn)
                 tau = taumn;
             else if (h >= taumx)
                 tau = taumx;
             else
                 tau = h;
-            */
         }}
     }}
     """
@@ -199,16 +199,19 @@ kernel void infer (global int* output)
 kernel void error (global half* error)
 {{
     constant char input = {mbedin[string[0]]}, coect = {mbedin[string[1]]};
-    //constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     {irlop()}
     barrier(CLK_LOCAL_MEM_FENCE);
     /*
-    if (locl==coect)
-        error[0] = -log(pow(max(0.h, linop[coect] - tau), { 1/(alpha-1) }h) / Z);   // cross-entropy loss
+    if (locl==0)
+        error[0] = -log(pow(max(0.h, linop[coect] - tau), {1/(alpha - 1)}h));   // cross-entropy loss
+    else if (locl==1)
+        error[1] = pow(max(0.h, linop[coect] - tau), {1/(alpha - 1)}h);
+    else if (locl==2)
+        error[2] = -log(max(0.h, linop[coect] - tau)) / {alpha - 1}h;
     */
     if (!locl0)
-        error[locl1] = pow(max(0.h, linop[locl1] - tau), {1/(alpha - 1)}h);
+        error[locl1] = pow(max(0.h, linop[locl1] * {alpha-1}h - tau), {1/(alpha - 1)}h);
 }}
 """
 
