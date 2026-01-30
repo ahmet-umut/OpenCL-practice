@@ -55,18 +55,6 @@ Agumen(error)
 
 # lower bound: 1.0003 - upper bound: 2.3414
 alpha = 1.5
-irie = f"""
-    int locl0 = get_local_id(0);
-    int locl1 = get_local_id(1);
-    int locl = locl1*{max(rank,3)} + locl0;
-
-    //{( cel_o := 2**ceil(log2(vo_se)) )} //next power of 2 from vo_se
-    local half preactivation[{rank}][{vo_se}];
-    local half linop[{cel_o}];
-    local half reddt[3][{vo_se//2+1}];
-    local half tau,taumn,taumx, z[3][{cel_o}], Z; //for finding tau in alpha-entmax
-    local int converged;
-    """
 # Reduction macro. Reduces to reddt[0] in log(opspe steps.)
 redue = lambda souce, auval, fn: f"""
     if (locl1 < {cel_o - vo_se})
@@ -86,6 +74,19 @@ redue = lambda souce, auval, fn: f"""
         { "}"*depth }
     }}
     """
+
+irie = f"""
+    int locl0 = get_local_id(0);
+    int locl1 = get_local_id(1);
+    int locl = locl1*{max(rank,3)} + locl0;
+
+    //{( cel_o := 2**ceil(log2(vo_se)) )} //next power of 2 from vo_se
+    local half preactivation[{rank}][{vo_se}];
+    local half linop[{cel_o}], scors[{cel_o}];
+    local half reddt[3][{vo_se//2+1}];
+    local half tau,taumn,taumx, z[3][{cel_o}], Z; //for finding tau in alpha-entmax
+    local int converged;
+    """
 irlop = lambda ipnex=None: f"""
     if (locl0 < {rank})
         preactivation[locl0][locl1] = weights[locl0][{"input" if ipnex is None else f"output[{ipnex}]"}][0] * weights[locl0][locl1][1];
@@ -98,7 +99,7 @@ irlop = lambda ipnex=None: f"""
         half sum = 0.0f;
         for (int i = 0; i < {rank}; i++)
             sum += preactivation[i][locl1];
-        linop[locl1] = sum * {alpha-1}h;  // pre-scale for entmax
+        linop[locl1] = (scors[locl1] = sum) * {alpha-1}h;  // pre-scale for entmax
     }}
 
     // find tau for alpha entmax:
@@ -201,12 +202,11 @@ kernel void error (global half* error)
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl0 == 0)
     {{
-        /*
-        half relu = max(0.h, linop[coect] - tau);
-        if (relu > 0.h)
-            error[0] = -log(relu) / {alpha - 1}h;   // cross-entropy loss
-        */
-        error[locl1] = z[0][locl1] - (locl1==coect);
+        // alpha-entmax loss
+        error[locl1] = (z[0][locl1] - (locl1==coect)) * scors[locl1] + (z[0][locl1] - pow(z[0][locl1], {alpha}h));
+        {redue("error", "0.0h", "add")}
+        if (!locl)
+            error[0] = reddt[0][0] / {alpha * (alpha - 1)}h;
     }}
 }}
 """
