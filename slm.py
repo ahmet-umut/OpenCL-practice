@@ -35,30 +35,6 @@ output.host_array[0] = mbedin[string[0]]
 # Create out-of-order queue after SVM allocations
 queue = opencl.CommandQueue(coext, properties=opencl.command_queue_properties.OUT_OF_ORDER_EXEC_MODE_ENABLE)
 
-#agumen (legacy)
-"""
-class Agumen:
-    def __init__(self, cl_buf):
-        self.array = cl_buf
-        self.type = "half" if cl_buf.dtype == clypes.half else "int"
-        for name, value in globals().items():
-            if value is self.array:
-                self.name = name
-                break
-        def text(self, globa=0):
-            return f"{"global" if globa else "constant"} {self.type}* {self.name}"
-        self.text = text
-        self.array.text = text.__get__(self)
-
-    def __getattr__(self, name):
-        return getattr(self.array, name)
-
-Agumen(weights)
-Agumen(output)
-Agumen(error)
-Agumen(debug)
-"""
-
 # lower bound: 1.0003 - upper bound: 2.3414
 alpha = 1.5
 # Reduction macro. Reduces to reddt[0] in log(opspe steps.)
@@ -68,16 +44,16 @@ redue = lambda souce, auval, fn: f"""
     barrier(CLK_LOCAL_MEM_FENCE);
     if (locl1%2 == 0)
     {{
-        reddt[locl0][locl1/2] = {fn}({souce}[locl1], {souce}[locl1+1]);
+        reddt[locl0][locl1] = {fn}({souce}[locl1], {souce}[locl1+1]);
 
-        //{( depth := ceil(log2(vo_se))-1 )}
+        //{( depth := ceil(log2(vo_se)) )}
         {"".join(f"""
         barrier(CLK_LOCAL_MEM_FENCE);
         if (locl1%{2**(n+1)} == 0)
         {{
-            reddt[locl0][locl1/{2**(n+1)}] = {fn}(reddt[locl0][locl1/{2**n}], reddt[locl0][locl1/{2**n}+1]);
-            """ for n in range(1, depth+1)) }
-        { "}"*depth }
+            reddt[locl0][locl1] = {fn}(reddt[locl0][locl1], reddt[locl0][locl1+{2**n}]);
+            """ for n in range(1, depth)) }
+        { "}"*(depth-1) }
     }}
     """
 
@@ -167,7 +143,7 @@ kernel void infer (global int* _weights, global int* output)
 {{
     constant half random[] = {{{", ".join(f"{numpy.random.rand():f}h" for _ in range(optlt))}}};
     {irie}
-    local char cf_rt[{optlt}];
+    local int cf_rt[{cel_o//2}];
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
         irlop(ipnex) + 
         f"""
@@ -176,16 +152,20 @@ kernel void infer (global int* _weights, global int* output)
         barrier(CLK_LOCAL_MEM_FENCE);
         if (!locl0 && locl1%2 == 0)
         {{
-            reddt[0][locl1/2] = z[0][locl1] + z[0][locl1+1];
-            cf_rt[locl1/2] = random[{ipnex}] * reddt[0][locl1/2] < z[0][locl1] ? locl1 : locl1+1;
+            reddt[0][locl1] = z[0][locl1] + z[0][locl1+1];
+            cf_rt[locl1] = random[{ipnex}] * reddt[0][locl1] < z[0][locl1] ? locl1 : locl1+1;
+            if ({ipnex}==0)
+                printf("randomized: %f, element: %f, picked %d\\n", random[{ipnex}] * reddt[0][locl1], z[0][locl1], cf_rt[locl1]);
 
             //{( depth := ceil(log2(vo_se))-1 )}
             {"".join(f"""
             barrier(CLK_LOCAL_MEM_FENCE);
             if (locl1%{2**(n+1)} == 0)
             {{
-                reddt[0][locl1/{2**(n+1)}] = reddt[0][locl1/{2**n}] + reddt[0][locl1/{2**n}+1];
-                cf_rt[locl1/{2**(n+1)}] = random[{ipnex}] * reddt[0][locl1/{2**(n+1)}] < reddt[0][locl1/{2**n}] ? cf_rt[locl1/{2**n}] : cf_rt[locl1/{2**n}+1];
+                reddt[0][locl1] = reddt[0][locl1] + reddt[0][locl1+{2**n}];
+                cf_rt[locl1] = random[{ipnex}] * reddt[0][locl1] > reddt[0][locl1+{2**n}] ? cf_rt[locl1] : cf_rt[locl1+{2**n}];
+                if ({ipnex}==0)
+                    printf("randomized: %f, element: %f, picked %d\\n", random[{ipnex}] * reddt[0][locl1], reddt[0][locl1+{2**n}], cf_rt[locl1]);
                 """ for n in range(1, depth+1)) }
             { "}"*depth }
         }}
@@ -223,21 +203,26 @@ kernel void train (global int* _weights, global half* _debug)
     local half gadien[{vo_se}];
     if (!locl0)
     {{
-        debug[locl1][0] = z[0][locl1] - (locl1==coect);
+        //debug[locl1][0] = z[0][locl1] - (locl1==coect);
+        debug[locl1][0] = z[0][locl1];
+        debug[locl1][1] = weights[1][locl1][1];
 
         gadien[locl1] = z[0][locl1] - (locl1==coect);
+        weights[1][locl1][1] -= gadien[locl1] * weights[1][input][0];
     }}
+    /*
     barrier(CLK_LOCAL_MEM_FENCE);
     if (!locl)
     {{
         debug[0][1] = weights[1][input][0];
         debug[1][1] = weights[1][2][1];
 
-        weights[1][2][1] -= gadien[2] * weights[1][input][0];
+        //weights[1][2][1] -= gadien[2] * weights[1][input][0];
 
         debug[2][1] = weights[1][2][1];
-        //debug[3][1] = coect;
+        debug[3][1] = z[0][coect];
     }}
+    */
 }}
 """
 
@@ -248,21 +233,24 @@ infer = prg.infer
 loss = prg.loss
 train = prg.train
 
-#run kernels with zero-copy buffers
-infer(queue, (max(rank,3), vo_se), None, weights, output)
-loss(queue, (max(rank,3), vo_se), None, weights, error)
-train(queue, (max(rank,3), vo_se), None, weights, debug)
-queue.finish()
-
 #print(f"Weights \n{weights.host_array}")
 print(f"volary: *{volary}*")
-#print(f"inference sequence {output.host_array}")
-print(f"decoded output: {''.join(volary[output.host_array[i]] for i in range(optlt+1))}")
-print(f"Error {error.host_array}")
-print(f"train Debug: \n{debug.host_array}")
 
-infer(queue, (max(rank,3), vo_se), None, weights, output)
-loss(queue, (max(rank,3), vo_se), None, weights, error)
-queue.finish()
-print(f"decoded output: {''.join(volary[output.host_array[i]] for i in range(optlt+1))}")
-print(f"Error {error.host_array}")
+for _ in range(99):
+    #run kernels
+    infer(queue, (max(rank,3), vo_se), None, weights, output)
+    loss(queue, (max(rank,3), vo_se), None, weights, error)
+    train(queue, (max(rank,3), vo_se), None, weights, debug)
+    queue.finish()
+    ##
+    decoded = ''.join(volary[output.host_array[i]] for i in range(optlt+1))
+    #print(f"inference sequence {output.host_array}")
+    print(f"decoded output: *{decoded}*")
+    print(f"Error: {error.host_array}")
+    print(f"train Debug: \n{debug.host_array}")
+    #print(f"Weights after training \n{weights.host_array}")
+    if error.host_array[0] < 0 and decoded[1]!="i":
+        #print(f"train Debug: \n{debug.host_array}")
+        pass
+    if error.host_array[0] < -1:
+        break
