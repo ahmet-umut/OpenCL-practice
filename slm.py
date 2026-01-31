@@ -1,6 +1,7 @@
 import pyopencl as opencl
 import pyopencl.cltypes as clypes
 import numpy
+import random
 from math import *
 
 coext = opencl.create_some_context(answers=[open("anser.txt").read()])
@@ -232,21 +233,24 @@ train = prg.train
 #print(f"Weights \n{weights.host_array}")
 print(f"volary: *{volary}*")
 
-for _ in range(99):
-    #run kernels
-    infer(queue, (max(rank,3), vo_size), None, weights, output)
-    loss(queue, (max(rank,3), vo_size), None, weights, clypes.char(mbedin[string[0]]), clypes.char(mbedin[string[1]]), error)
-    train(queue, (max(rank,3), vo_size), None, weights, clypes.char(mbedin[string[0]]), clypes.char(mbedin[string[1]]), debug)
-    queue.finish()
-    ##
-    decoded = ''.join(volary[output.c_ray[i]] for i in range(opt_length+1))
-    #print(f"inference sequence {output.c_ray}")
-    print(f"decoded output: {decoded}")
-    print(f"Error: {error.c_ray}")
-    print(f"train Debug: \n{debug.c_ray}")
-    #print(f"Weights after training \n{weights.c_ray}")
-    if error.c_ray[0] < 0 and decoded[1]!="i":
-        #print(f"train Debug: \n{debug.c_ray}")
-        pass
-    if error.c_ray[0] < -1:
+for _ in range(999):
+    loss_value = 0
+    for ipt,coect in random.sample([string[nex:nex+2] for nex in range(len(string)-1)], len(string)-1):
+        #run kernels
+        infer(queue, (max(rank,3), vo_size), None, weights, output)
+        loss(queue, (max(rank,3), vo_size), None, weights, clypes.char(mbedin[ipt]), clypes.char(mbedin[coect]), error)
+        train(queue, (max(rank,3), vo_size), None, weights, clypes.char(mbedin[ipt]), clypes.char(mbedin[coect]), debug)
+        queue.finish()
+        loss_value += error.c_ray[0]
+        ##
+        decoded = ''.join(volary[output.c_ray[i]] for i in range(opt_length+1))
+        print(f"decoded output sequence: {decoded} error:{error.c_ray}")
+        #print(f"inference sequence {output.c_ray}")
+        #print(f"Weights after training \n{weights.c_ray}")
+    if loss_value < 0.01:
+        print(f"volary: *{volary}*")
+        for nex in range(len(string)-1):
+            train(queue, (max(rank,3), vo_size), None, weights, clypes.char(mbedin[string[nex]]), clypes.char(mbedin[string[nex+1]]), debug).wait()
+            print(f"train Debug: \n{debug.c_ray}")
         break
+        
