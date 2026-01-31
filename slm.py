@@ -1,11 +1,9 @@
-from numpy.random import f
 import pyopencl as opencl
 import pyopencl.cltypes as clypes
 import numpy
 from math import *
 
 coext = opencl.create_some_context(answers=[open("anser.txt").read()])
-queue = opencl.CommandQueue(coext)
 
 string = "Biz "
 volary = "".join(list(set(string)))
@@ -14,7 +12,7 @@ mbedin = {char: volary.index(char) for char in string}
 #zero-copy array
 def zerocopa(shape, adiid=False, dtype=clypes.half):
     np_dtype = numpy.float16 if dtype == clypes.half else numpy.int32
-    host_array = opencl.csvm_empty(coext, shape, np_dtype, queue=queue)
+    host_array = opencl.csvm_empty(coext, shape, np_dtype)  # no queue = uses internal in-order queue
     if adiid:
         host_array[:] = numpy.random.rand(*shape).astype(np_dtype)
     cl_buf = opencl.SVM(host_array)
@@ -23,7 +21,7 @@ def zerocopa(shape, adiid=False, dtype=clypes.half):
     cl_buf.host_array = host_array
     return cl_buf
 
-optlt=3
+optlt=2
 rank=2
 vo_se=len(volary)
 
@@ -33,6 +31,9 @@ error = zerocopa((1,))
 debug = zerocopa((vo_se,2))
 
 output.host_array[0] = mbedin[string[0]]
+
+# Create out-of-order queue after SVM allocations
+queue = opencl.CommandQueue(coext, properties=opencl.command_queue_properties.OUT_OF_ORDER_EXEC_MODE_ENABLE)
 
 #agumen (legacy)
 """
@@ -81,6 +82,8 @@ redue = lambda souce, auval, fn: f"""
     """
 
 irie = f"""
+    global half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (global half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
+
     int locl0 = get_local_id(0);
     int locl1 = get_local_id(1);
     int locl = locl1*{max(rank,3)} + locl0;
@@ -159,12 +162,10 @@ irlop = lambda ipnex=None: f"""
 kernel = f"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #define add(a,b) ((a)+(b))
-constant half _weights{"".join(f"[{dimen}]" for dimen in weights.shape)} = {{ {", ".join(f"{i:f}h" for i in weights.host_array.flatten())} }};
 
-kernel void infer (global int* output)
+kernel void infer (global int* _weights, global int* output)
 {{
     constant half random[] = {{{", ".join(f"{numpy.random.rand():f}h" for _ in range(optlt))}}};
-    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     local char cf_rt[{optlt}];
     {{{ "} barrier(CLK_LOCAL_MEM_FENCE); {".join(
@@ -193,10 +194,9 @@ kernel void infer (global int* output)
         """
     for ipnex in range(optlt))}}}
 }}
-kernel void loss (global half* error)
+kernel void loss (global int* _weights, global half* error)
 {{
     constant char input = {mbedin[string[0]]}, coect = {mbedin[string[1]]};
-    constant half (*weights){"".join(f"[{dimen}]" for dimen in weights.shape[1:])} = (constant half (*){"".join(f"[{dimen}]" for dimen in weights.shape[1:])})_weights;
     {irie}
     {irlop()}
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -212,14 +212,9 @@ kernel void loss (global half* error)
             error[0] = reddt[0][0] / {alpha * (alpha - 1)}h;
     }}
 }}
-kernel void train (global half* _debug)
+kernel void train (global int* _weights, global half* _debug)
 {{
     {irie}
-    local half weights{"".join(f"[{dimen}]" for dimen in weights.shape)};
-    if (locl0 < {rank})
-        weights[locl0][locl1][0] = _weights[locl0][locl1][0],
-        weights[locl0][locl1][1] = _weights[locl0][locl1][1];
-    
     constant char input = {mbedin[string[0]]}, coect = {mbedin[string[1]]};
     {irlop()}
     global half (*debug){"".join(f"[{dimen}]" for dimen in debug.shape[1:])} = (global half (*){"".join(f"[{dimen}]" for dimen in debug.shape[1:])})_debug;
@@ -248,18 +243,26 @@ kernel void train (global half* _debug)
 
 print(kernel)
 
-# Build and run
 prg = opencl.Program(coext, kernel).build()
+infer = prg.infer
+loss = prg.loss
+train = prg.train
 
 #run kernels with zero-copy buffers
-prg.infer(queue, (max(rank,3), vo_se), None, output)
-prg.loss(queue, (max(rank,3), vo_se), None, error)
-prg.train(queue, (max(rank,3), vo_se), None, debug)
+infer(queue, (max(rank,3), vo_se), None, weights, output)
+loss(queue, (max(rank,3), vo_se), None, weights, error)
+train(queue, (max(rank,3), vo_se), None, weights, debug)
 queue.finish()
 
 #print(f"Weights \n{weights.host_array}")
 print(f"volary: *{volary}*")
 #print(f"inference sequence {output.host_array}")
-print(f"decoded: {''.join(volary[output.host_array[i]] for i in range(optlt+1))}")
+print(f"decoded output: {''.join(volary[output.host_array[i]] for i in range(optlt+1))}")
 print(f"Error {error.host_array}")
 print(f"train Debug: \n{debug.host_array}")
+
+infer(queue, (max(rank,3), vo_se), None, weights, output)
+loss(queue, (max(rank,3), vo_se), None, weights, error)
+queue.finish()
+print(f"decoded output: {''.join(volary[output.host_array[i]] for i in range(optlt+1))}")
+print(f"Error {error.host_array}")
